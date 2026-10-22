@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SVCCROTCU QR Scanner</title>
+<style>
+:root{--bg:#f3f4ee;--card:#fff;--ink:#1d2419;--mut:#667060;--line:#d5d9cd;--acc:#3b5a2a;--ok:#2e7d32;--bad:#c0392b;--warn:#b7791f}
+@media(prefers-color-scheme:dark){:root{--bg:#141a11;--card:#1e271a;--ink:#e9eee4;--mut:#9aa693;--line:#33402d;--acc:#6f9a55;--ok:#6fcf74;--bad:#ff8a7a;--warn:#e0b04a}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,Segoe UI,Roboto,sans-serif}
+header{background:var(--acc);color:#fff;padding:12px 16px}header b{display:block;font-size:1.05rem}header small{opacity:.85}
+main{max-width:640px;margin:0 auto;padding:16px}.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:14px}
+label{display:block;font-size:.85rem;color:var(--mut);margin:8px 0 4px}input,select,button{font:inherit;padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink);max-width:100%}
+input,select{width:100%}button{background:var(--acc);color:#fff;border-color:var(--acc);font-weight:600;cursor:pointer}button.alt{background:var(--card);color:var(--ink);border-color:var(--line)}button:disabled{opacity:.5}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.row>*{flex:1 1 auto;width:auto}.row>div{flex:1 1 150px!important}.hide{display:none!important}.note{color:var(--mut);font-size:.85rem}
+#view{position:relative;background:#000;border-radius:12px;overflow:hidden;aspect-ratio:1/1;max-height:60vh;width:100%}video{width:100%;height:100%;object-fit:cover;display:block}
+#view:after{content:"";position:absolute;inset:18%;border:3px solid rgba(255,255,255,.85);border-radius:14px;box-shadow:0 0 0 999px rgba(0,0,0,.25)}
+#res{border-radius:12px;padding:16px;text-align:center;font-weight:700;font-size:1.15rem;margin-top:12px;min-height:64px;display:flex;align-items:center;justify-content:center}
+#res.ok{background:rgba(46,125,50,.18);color:var(--ok)}#res.w{background:rgba(183,121,31,.18);color:var(--warn)}#res.no{background:rgba(192,57,43,.18);color:var(--bad)}#res.idle{background:var(--bg);color:var(--mut);font-weight:400;font-size:.95rem}
+table{width:100%;border-collapse:collapse;font-size:.9rem}td{padding:6px 4px;border-top:1px solid var(--line)}.err{color:var(--bad);font-size:.9rem;white-space:pre-line;margin-top:8px}
+</style></head><body>
+<header><b>SVCCROTCU QR Scanner</b><small id="who">Not logged in</small></header>
+<main>
+<section id="vLogin" class="card hide">
+  <h3 style="margin:0 0 6px">Log in</h3><p class="note">Use your Security ID Number and portal password (same as the portal).</p>
+  <div id="apiRow"><label for="api">Portal address (ends with /exec)</label><input id="api" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off"></div>
+  <label for="lu">Security ID Number</label><input id="lu" autocomplete="username" autocapitalize="characters"><label for="lp">Password</label><input id="lp" type="password" autocomplete="current-password">
+  <div class="row"><button id="lb">Log in</button></div><div class="err" id="le"></div>
+</section>
+<section id="vScan" class="hide">
+  <div class="card">
+    <div class="row" style="margin-top:0"><div style="flex:2"><label for="mode">Scan</label><select id="mode"><option value="cad">Cadets (attendance)</option><option value="off">Cadet Officers (attendance)</option></select></div>
+    <div style="flex:2"><label for="td">Training Day</label><select id="td"></select></div><div style="flex:2"><label for="st">Mark as</label><select id="st"><option value="">Present (auto Late)</option><option value="P">Present</option><option value="L">Late</option><option value="A">Absent</option></select></div></div>
+    <div id="scopeNote" class="note"></div>
+  </div>
+  <div class="card">
+    <div id="view" class="hide"><video id="v" playsinline muted></video></div><canvas id="cv" class="hide"></canvas>
+    <div class="row"><button id="cam">Start camera</button><button class="alt" id="sw">Switch camera</button><button class="alt" id="tc">Light</button><button class="alt" id="pb">Take photo of QR</button><input id="ph" type="file" accept="image/*" capture="environment" class="hide"></div>
+    <div class="err" id="ce"></div>
+    <label for="sn">Scanner gun / type the number, then Enter</label><div class="row" style="margin-top:0"><input id="sn" autocomplete="off" autocapitalize="characters" placeholder="Student / Security ID Number"><button id="go" style="flex:0 0 auto">Record</button></div>
+    <div id="res" class="idle">Ready. Show the QR code to the camera, or use the scanner gun.</div>
+  </div>
+  <div class="card"><div style="display:flex;justify-content:space-between"><b>Recent scans</b><span class="note" id="cnt"></span></div><table id="log"></table></div>
+  <div class="row"><button class="alt" id="out">Log out</button></div>
+</section>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
+<script>
+var $=function(i){return document.getElementById(i)},API="",TOKEN="",SI=null,SCOPE={},stream=null,facing="environment",busy=false,lastQ="",lastT=0,N={ok:0,bad:0};
+function store(k,v){try{if(v==null)return localStorage.getItem(k)||"";localStorage.setItem(k,v)}catch(e){return""}}
+(function init(){var h=new URLSearchParams(location.hash.replace(/^#/,"")||location.search.replace(/^\?/,""));
+  API=h.get("api")||store("api")||"";TOKEN=h.get("t")||"";if(API)store("api",API);
+  try{SCOPE=JSON.parse(h.get("sc")||"{}")}catch(e){SCOPE={}}
+  var m=h.get("m"),td=h.get("td");if(location.hash||location.search)history.replaceState(null,"",location.pathname);
+  window.__start={m:m,td:td};if(API)$("api").value=API;
+  if(TOKEN&&API)open2();else showLogin()})();
+function showLogin(){$("vScan").classList.add("hide");$("vLogin").classList.remove("hide");$("api").value=API}
+async function call(fn,args){var r;try{r=await fetch(API,{method:"POST",body:JSON.stringify({fn:fn,args:args||[]}),redirect:"follow"})}catch(e){throw new Error("No connection to the portal. Check your internet and the portal address.")}
+  var j;try{j=await r.json()}catch(e){throw new Error("The portal did not answer correctly. Check that the web app is deployed as a NEW VERSION and the address ends with /exec.")}
+  if(j.e){if(/SESSION:/.test(j.e)){TOKEN="";showLogin();$("le").textContent="Your session expired. Please log in again."}throw new Error(j.e.replace(/^.*SESSION:\s*/,""))}return j.v}
+$("lb").onclick=async function(){API=$("api").value.trim();if(!/^https:\/\/script\.google\.com\/.+\/exec/.test(API)&&!/^https:\/\/script\.googleusercontent\.com\//.test(API)){$("le").textContent="Paste the portal address (it ends with /exec).";return}
+  store("api",API);$("lb").disabled=true;$("le").textContent="";try{var r=await call("login",[$("lu").value.trim(),$("lp").value]);if(!r.ok){$("le").textContent=r.msg;return}TOKEN=r.token;$("lp").value="";await open2()}catch(e){$("le").textContent=e.message}finally{$("lb").disabled=false}};
+$("lp").addEventListener("keydown",function(e){if(e.key==="Enter")$("lb").click()});
+async function open2(){try{SI=await call("staffInit",[TOKEN])}catch(e){showLogin();$("le").textContent=e.message;return}
+  $("vLogin").classList.add("hide");$("vScan").classList.remove("hide");$("who").textContent=SI.name+" | "+SI.sn;
+  var cur=0,t=SI.today;SI.tds.forEach(function(d,i){if(d===t)cur=i+1});if(!cur)for(var i=0;i<SI.tds.length;i++)if(SI.tds[i]&&SI.tds[i]>t){cur=i+1;break}
+  $("td").innerHTML=SI.tds.map(function(d,i){return"<option value="+(i+1)+">TD "+(i+1)+(d?" ("+d+")":"")+"</option>"}).join("");$("td").value=String(window.__start.td||cur||1);
+  if(!SI.staff){$("mode").value="cad";$("mode").querySelector('[value=off]').remove()}else if(window.__start.m==="off")$("mode").value="off";
+  $("scopeNote").textContent=SI.full?"You can scan every company.":SCOPE&&SCOPE.help?"Helping "+SCOPE.company+" Company.":"You can scan your own company only.";
+  if(!("ontouchstart" in window))$("sn").focus()}
+function say(cls,t){var r=$("res");r.className=cls;r.textContent=t}
+function beep(ok){try{navigator.vibrate&&navigator.vibrate(ok?60:[80,60,80])}catch(e){}try{var A=window.AudioContext||window.webkitAudioContext,c=new A(),o=c.createOscillator(),g=c.createGain();o.frequency.value=ok?880:220;g.gain.value=.1;o.connect(g);g.connect(c.destination);o.start();setTimeout(function(){o.stop();c.close()},ok?120:260)}catch(e){}}
+async function record(raw){raw=String(raw||"").trim();if(!raw||busy)return;busy=true;var off=$("mode").value==="off",st=$("st").value;say("idle","Checking...");
+  try{var r=off?await call("officerMark",[TOKEN,raw,$("td").value,st===""?null:st]):await call("markAttendance",[TOKEN,raw,$("td").value,SCOPE||{},st===""?null:st]);
+    var good=r.ok&&!r.dup;say(!r.ok?"no":r.dup?"w":"ok",r.msg);beep(good);add(r.ok?(r.name||raw):raw,r.msg,!r.ok?"no":r.dup?"w":"ok");if(r.ok&&!r.dup)N.ok++;else N.bad++}
+  catch(e){say("no",e.message);beep(false);add(raw,e.message,"no");N.bad++}
+  busy=false;$("sn").value="";$("cnt").textContent=N.ok+" recorded | "+N.bad+" with problems";if(!("ontouchstart" in window))$("sn").focus()}
+function add(n,m,c){var t=new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",second:"2-digit"}),tr=document.createElement("tr");tr.innerHTML='<td style="width:78px;color:var(--mut)">'+t+"</td><td></td>";tr.children[1].textContent=m;tr.children[1].style.color=c==="ok"?"var(--ok)":c==="w"?"var(--warn)":"var(--bad)";var L=$("log");L.insertBefore(tr,L.firstChild);while(L.rows.length>30)L.deleteRow(30)}
+$("sn").addEventListener("input",function(){this.value=this.value.toUpperCase().replace(/\s/g,"")});$("sn").addEventListener("keydown",function(e){if(e.key==="Enter"&&this.value)record(this.value)});$("go").onclick=function(){if($("sn").value)record($("sn").value)};
+// scanner gun: any typing goes to the box
+document.addEventListener("keydown",function(e){var t=e.target.tagName;if(t==="INPUT"||t==="SELECT"||t==="TEXTAREA"||e.ctrlKey||e.metaKey||e.altKey||$("vScan").classList.contains("hide"))return;if(e.key&&e.key.length===1)$("sn").focus()});
+// live camera
+var det=("BarcodeDetector" in window)?new BarcodeDetector({formats:["qr_code"]}):null,cx=$("cv").getContext("2d",{willReadFrequently:true});
+function stop(){if(stream)stream.getTracks().forEach(function(t){t.stop()});stream=null;$("view").classList.add("hide");$("cam").textContent="Start camera"}
+async function start(){$("ce").textContent="";stop();
+  try{if(!det&&typeof jsQR==="undefined")throw new Error("The QR reader did not load. Check your internet.");
+    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:facing},width:{ideal:1280},height:{ideal:720}},audio:false});var v=$("v");v.srcObject=stream;$("view").classList.remove("hide");await v.play();$("cam").textContent="Stop camera";tick()}
+  catch(e){stream=null;$("ce").textContent=(e&&e.name==="NotAllowedError"?"Camera permission was denied. Allow the camera for this site in your browser settings, then try again.":e&&e.name==="NotFoundError"?"No camera found on this device.":e&&e.message||"Could not open the camera.")+"\nYou can still use \"Take photo of QR\" or a scanner gun."}}
+async function tick(){if(!stream)return;var v=$("v");if(v.readyState>=2&&v.videoWidth&&!busy){var txt=null;try{if(det){var rs=await det.detect(v);if(rs.length)txt=rs[0].rawValue}else{var c=$("cv");c.width=v.videoWidth;c.height=v.videoHeight;cx.drawImage(v,0,0);var im=cx.getImageData(0,0,c.width,c.height),q=jsQR(im.data,im.width,im.height);if(q)txt=q.data}}catch(e){}
+    if(!txt&&det&&typeof jsQR!=="undefined"){var c2=$("cv");c2.width=v.videoWidth;c2.height=v.videoHeight;cx.drawImage(v,0,0);var im2=cx.getImageData(0,0,c2.width,c2.height),q2=jsQR(im2.data,im2.width,im2.height);if(q2)txt=q2.data}
+    if(txt&&(txt!==lastQ||Date.now()-lastT>3500)){lastQ=txt;lastT=Date.now();record(txt)}}
+  setTimeout(function(){requestAnimationFrame(tick)},det?120:60)}
+$("cam").onclick=function(){stream?stop():start()};$("sw").onclick=function(){facing=facing==="environment"?"user":"environment";if(stream)start()};
+$("tc").onclick=async function(){try{var t=stream&&stream.getVideoTracks()[0];if(!t||!(t.getCapabilities&&t.getCapabilities().torch))throw 0;this.dataset.on=this.dataset.on?"":"1";await t.applyConstraints({advanced:[{torch:!!this.dataset.on}]})}catch(e){$("ce").textContent="This phone / browser does not allow the light here."}};
+// photo of a QR (works even where the live camera does not)
+function loadImg(f){return new Promise(function(ok,no){var u=URL.createObjectURL(f),i=new Image();i.onload=function(){URL.revokeObjectURL(u);ok(i)};i.onerror=function(){no(new Error("Image format not supported."))};i.src=u})}
+async function fromPhoto(f){var im=await loadImg(f),w=im.naturalWidth,h=im.naturalHeight;if(det){try{var rs=await det.detect(im);if(rs.length&&rs[0].rawValue)return rs[0].rawValue}catch(e){}}
+  var boxes=[null,[.15,.15,.7,.7],[0,0,.6,.6],[.4,0,.6,.6],[0,.4,.6,.6],[.4,.4,.6,.6]],sizes=[1400,900,600,380];
+  for(var b=0;b<boxes.length;b++)for(var s=0;s<sizes.length;s++){var bx=boxes[b],sx=0,sy=0,sw=w,sh=h;if(bx){sx=bx[0]*w;sy=bx[1]*h;sw=bx[2]*w;sh=bx[3]*h}var k=sizes[s]/Math.max(sw,sh),c=document.createElement("canvas");c.width=Math.round(sw*k);c.height=Math.round(sh*k);var x=c.getContext("2d",{willReadFrequently:true});x.fillStyle="#fff";x.fillRect(0,0,c.width,c.height);x.drawImage(im,sx,sy,sw,sh,0,0,c.width,c.height);var d=x.getImageData(0,0,c.width,c.height),q=jsQR(d.data,d.width,d.height,{inversionAttempts:"attemptBoth"});if(q&&q.data)return q.data;await new Promise(function(r){setTimeout(r,0)})}
+  return null}
+$("pb").onclick=function(){$("ph").click()};$("ph").onchange=async function(){var f=this.files[0];this.value="";if(!f)return;say("idle","Reading photo...");try{var t=await fromPhoto(f);if(t)record(t);else say("no","No QR found. Fill the frame with only the QR, hold steady, avoid glare, or type the number.")}catch(e){say("no",e.message)}};
+$("out").onclick=function(){stop();TOKEN="";showLogin()};
+$("mode").onchange=function(){$("sn").placeholder=this.value==="off"?"Security ID Number":"Student Number"};
+</script></body></html>
