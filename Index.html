@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SVCCROTCU Scanner</title>
+<style>
+:root{--g:#2d4422;--gold:#d9a62b;--bg:#f1f4ea;--ink:#1d2a14;--line:#cfd6bf;--ok:#2e7d32;--w:#b7791f;--bad:#b3261e}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+header{background:var(--g);color:#fff;padding:12px 16px;border-bottom:4px solid var(--gold)}
+header b{font-family:Georgia,serif;font-size:1.1rem}header span{display:block;font-size:.85rem;opacity:.85}
+main{max-width:560px;margin:0 auto;padding:12px}
+.card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:12px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+select,input{font:inherit;padding:9px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);min-width:0}
+button{font:inherit;border:0;border-radius:8px;padding:10px 14px;background:var(--g);color:#fff;cursor:pointer}button.alt{background:#fff;color:var(--g);border:1px solid var(--g)}
+.cam{position:relative;background:#000;border-radius:12px;overflow:hidden;aspect-ratio:1/1}
+video{width:100%;height:100%;object-fit:cover;display:block}
+.frame{position:absolute;inset:18%;border:3px solid var(--gold);border-radius:14px;box-shadow:0 0 0 999px rgba(0,0,0,.35);pointer-events:none}
+.msg{border-radius:12px;padding:14px;font-weight:600;text-align:center;min-height:56px;display:flex;align-items:center;justify-content:center}
+.msg.idle{background:#e9edda;color:#4a5640;font-weight:500}.msg.ok{background:var(--ok);color:#fff}.msg.dup{background:var(--w);color:#fff}.msg.no{background:var(--bad);color:#fff}
+ul{list-style:none;margin:0;padding:0}li{padding:7px 0;border-bottom:1px solid var(--line);font-size:.9rem}li:last-child{border:0}
+.tag{display:inline-block;border-radius:99px;padding:1px 9px;font-size:.75rem;color:#fff;margin-right:6px}.tag.ok{background:var(--ok)}.tag.dup{background:var(--w)}.tag.no{background:var(--bad)}
+.note{color:#5b6a50;font-size:.85rem}
+</style>
+</head>
+<body>
+<header><b>SVCCROTCU Scanner</b><span id="sub">Opening...</span></header>
+<main>
+<div class="card"><div class="row">
+<label>TD <select id="td"></select></label>
+<label>Mark <select id="st"><option value="">Present (auto late)</option><option value="P">Present</option><option value="L">Late</option><option value="A">Absent</option></select></label>
+</div></div>
+<div class="card">
+<div class="cam"><video id="v" playsinline muted></video><div class="frame"></div></div>
+<div class="row" style="margin-top:10px"><button id="start">Start camera</button><button class="alt" id="flip">Switch camera</button><button class="alt" id="stop">Stop</button></div>
+<p class="note" id="camnote" style="margin:8px 0 0">Allow the camera when your phone asks. Hold the cadet&rsquo;s QR code inside the gold frame.</p>
+</div>
+<div id="msg" class="msg idle">Waiting for a QR code</div>
+<div class="card" style="margin-top:12px"><div class="row"><input id="sn" placeholder="Or type the Student Number" autocapitalize="characters" style="flex:1"><button id="go">Record</button></div></div>
+<div class="card"><b>Recent scans</b><ul id="log"></ul></div>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
+<script>
+var P=new URLSearchParams(location.hash.slice(1)),API=P.get('api')||'',TOKEN=P.get('t')||'',MODE=P.get('m')==='off'?'off':'cad',SC={};
+try{SC=JSON.parse(P.get('sc')||'{}')}catch(e){}
+var $=function(i){return document.getElementById(i)},stream=null,facing='environment',busy=false,lastQ='',lastT=0,det=null,wake=null,audio=null;
+$('sub').textContent=(MODE==='off'?'Officer attendance':'Cadet attendance')+(API&&TOKEN?'':' | OPEN THIS PAGE FROM THE PORTAL');
+var tdSel=$('td');for(var i=1;i<=17;i++){var o=document.createElement('option');o.value=i;o.textContent=i<=15?'TD '+i:(i===16?'Orientation':'Special firing');tdSel.appendChild(o)}
+tdSel.value=P.get('td')||'1';
+function show(cls,text){var m=$('msg');m.className='msg '+cls;m.textContent=text}
+function beep(ok){try{audio=audio||new (window.AudioContext||window.webkitAudioContext)();var o=audio.createOscillator(),g=audio.createGain();o.frequency.value=ok?880:220;g.gain.value=.12;o.connect(g);g.connect(audio.destination);o.start();setTimeout(function(){o.stop()},ok?120:280)}catch(e){}if(navigator.vibrate)navigator.vibrate(ok?60:[80,60,80])}
+function call(fn,args){return fetch(API,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({fn:fn,args:args})}).then(function(r){return r.json()}).then(function(j){if(j.e)throw new Error(j.e);return j.v})}
+function addLog(cls,label,text){var li=document.createElement('li');li.innerHTML='<span class="tag '+cls+'">'+label+'</span>';li.appendChild(document.createTextNode(text));var u=$('log');u.insertBefore(li,u.firstChild);while(u.children.length>8)u.removeChild(u.lastChild)}
+function record(raw){
+  raw=String(raw||'').trim().toUpperCase().replace(/\s/g,'');if(!raw||busy)return;
+  if(!API||!TOKEN){show('no','Open this page from the portal (Attendance > Open camera scanner).');beep(false);return}
+  busy=true;show('idle','Recording '+raw+'...');
+  var td=tdSel.value,st=$('st').value,args=MODE==='off'?[TOKEN,raw,td]:[TOKEN,raw,td,SC];if(st)args.push(st);
+  call(MODE==='off'?'officerMark':'markAttendance',args).then(function(r){busy=false;var cls=!r.ok?'no':r.dup?'dup':'ok';show(cls,r.msg);addLog(cls,!r.ok?'ERROR':r.dup?'ALREADY':'OK',r.msg);beep(r.ok&&!r.dup);$('sn').value=''})
+  .catch(function(e){busy=false;var m=String(e.message||e);if(/log ?in|session|expired/i.test(m))m+=' Open the scanner again from the portal.';show('no',m);addLog('no','ERROR',m);beep(false)});
+}
+function onCode(raw){var q=String(raw||'').trim();if(!q)return;var now=Date.now();if(q===lastQ&&now-lastT<3500)return;lastQ=q;lastT=now;record(q)}
+function loop(){
+  if(!stream)return;var v=$('v');
+  if(v.readyState>=2&&v.videoWidth){
+    if(det){det.detect(v).then(function(c){if(c&&c.length)onCode(c[0].rawValue)}).catch(function(){})}
+    else if(window.jsQR){var cv=loop.cv||(loop.cv=document.createElement('canvas')),w=Math.min(640,v.videoWidth),h=Math.round(v.videoHeight*w/v.videoWidth);cv.width=w;cv.height=h;var cx=cv.getContext('2d',{willReadFrequently:true});cx.drawImage(v,0,0,w,h);var im=cx.getImageData(0,0,w,h),q=jsQR(im.data,w,h,{inversionAttempts:'attemptBoth'});if(q&&q.data)onCode(q.data)}
+  }
+  setTimeout(function(){requestAnimationFrame(loop)},120);
+}
+function start(){
+  stop();
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){$('camnote').textContent='This browser cannot open the camera here. Use Chrome or Safari, and make sure the page address starts with https://. You can still type the number below.';return}
+  if('BarcodeDetector' in window){try{det=new BarcodeDetector({formats:['qr_code']})}catch(e){det=null}}
+  if(!det&&!window.jsQR){$('camnote').textContent='The scanning library did not load. Check your internet, then reload. You can still type the number below.'}
+  navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:facing},width:{ideal:1280},height:{ideal:720}},audio:false}).then(function(s){
+    stream=s;var v=$('v');v.srcObject=s;v.play();$('camnote').textContent='Hold the QR code inside the gold frame.';
+    try{if(navigator.wakeLock)navigator.wakeLock.request('screen').then(function(l){wake=l}).catch(function(){})}catch(e){}
+    loop();
+  }).catch(function(e){var n=(e&&e.name)||'';$('camnote').textContent=n==='NotAllowedError'?'Camera permission was denied. Allow the camera for this site in the browser settings, then press Start camera.':n==='NotFoundError'?'No camera was found on this device.':'The camera could not open ('+(n||'error')+'). You can type the number below.'});
+}
+function stop(){if(stream){stream.getTracks().forEach(function(t){t.stop()});stream=null}try{if(wake){wake.release();wake=null}}catch(e){}}
+$('start').onclick=function(){try{audio=audio||new (window.AudioContext||window.webkitAudioContext)()}catch(e){}start()};
+$('stop').onclick=stop;
+$('flip').onclick=function(){facing=facing==='environment'?'user':'environment';if(stream)start()};
+$('go').onclick=function(){record($('sn').value)};
+$('sn').addEventListener('keydown',function(e){if(e.key==='Enter')record(this.value)});
+$('sn').addEventListener('input',function(){this.value=this.value.toUpperCase().replace(/\s/g,'')});
+document.addEventListener('visibilitychange',function(){if(document.hidden)stop()});
+if(API&&TOKEN)start();else show('no','Open this page from the portal (Attendance > Open camera scanner) so it knows who you are.');
+</script>
+</body>
+</html>
